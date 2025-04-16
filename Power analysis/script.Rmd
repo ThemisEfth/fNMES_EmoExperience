@@ -1,0 +1,297 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r include=FALSE}
+## Clear all
+rm(list=ls())
+
+library(broom.mixed)
+library(tidyverse)
+library(lmerTest)
+
+source("mixedpower_funcs.R")
+source("mixedpower_utility.R")
+source("mixedpower_powersimulation.R")
+
+# allow for Type III Sum of Squares
+options(contrasts = c("contr.sum", "contr.poly"))
+
+## Globals
+options(digits = 2, mc.cores = 8, scipen = 999)
+```
+
+### Import data from Coles et al. (2022), filter study 1 which was in the laboratory and only include subjects from the no-hypothesis group (aka 'Control'). Reduce and convert the dataframe into long format.
+
+```{r echo=TRUE}
+DF.long <- readRDS("./Coles/data/clean/data.long.clean.rds")
+DF.wide <- readRDS("./Coles/data/clean/data.wide.clean.rds")
+
+DF.long$trial <- factor(DF.long$trial, levels = c('Anger', 'Neutral', 'Happy'))
+
+DF.long$pose <- as.numeric(DF.long$trial)
+DF.long$ResponseId <- as.numeric(DF.long$ResponseId)
+DF.long$block.num <- as.numeric(DF.long$block.num)
+
+df <- 
+  filter(DF.long, study == 'Study_1' & demand == 'Control') %>% 
+  select(ResponseId, pose, happy, anger, trialnum = block.num) %>% 
+  mutate(anger = anger * (-1)) %>% 
+  pivot_longer(cols = c('happy', 'anger'), 
+               names_to = "emo", values_to = "rating")
+```
+
+### Print sample size and plot DVs from Coles et al., 2022
+
+```{r}
+
+# n participants who met inclusion criteria
+df$ResponseId %>% unique() %>% length()
+
+filter(DF.long, study == 'Study_1' & demand == 'Control') %>% 
+  ggplot(., aes(x = anger))+
+  geom_histogram(binwidth = .5)+
+  labs(title = 'Histogram of self-reported anger for raw data',
+       x = 'Self-reported anger')
+
+filter(DF.long, study == 'Study_1' & demand == 'Control') %>% 
+  ggplot(., aes(x = happy))+
+  geom_histogram(binwidth = .5) +
+  labs(title = 'Histogram of self-reported happiness for raw data',
+       x = 'Self-reported happiness')
+
+ggplot(df, aes(x = rating))+
+  geom_histogram(binwidth = .5) +
+  labs(title = 'Histogram of transformed variable, merging happy and anger',
+       x = 'Self-reported emotion')
+
+```
+
+### Run the model
+
+```{r}
+m <- df %>% 
+  lmerTest::lmer(rating ~ pose + 
+                      ( 1 | ResponseId), data = .)
+summary(m)
+broom.mixed::tidy(m)
+```
+
+### The model output shows an intercept of -.62 and fixed effect of pose as .38. Lets half this to .19
+
+```{r include=FALSE}
+# RUN SIMULATION
+SESOI <- c(-0.62, .19) # specify SESOI (i.e. specifiying a Smallest effect of interest which is used to simulate power)
+
+p <- mixedpower(model = m, data = df,
+                fixed_effects = c("pose"),
+                simvar = "ResponseId", steps = c(40, 50, 60),
+                critical_value = 2, n_sim = 1000,
+                SESOI = SESOI, databased = T)
+```
+
+### Here we plot our simulations, pose is the orignal beta (.38) and pose1 is the SESOI (.19) we chose. This is also reflected in the column 'mode' database being from the given dataset and SESOI being defined by us.
+
+```{r echo=FALSE}
+p
+# multiplotPower(p)
+```
+
+### Lets set it to .09 which is 1/4 of Coles beta
+
+```{r include=FALSE}
+# RUN SIMULATION
+SESOI <- c(-0.62, .09) # specify SESOI (i.e. specifying a Smallest effect of interest which is used to simulate power)
+
+p <- mixedpower(model = m, data = df,
+                fixed_effects = c("pose"),
+                simvar = "ResponseId", steps = c(120, 140),
+                critical_value = 2, n_sim = 1000,
+                SESOI = SESOI, databased = T)
+```
+
+```{r echo=FALSE}
+p
+# multiplotPower(p)
+```
+
+### Lets re-run the model standaridised
+```{r echo=TRUE}
+
+df$rating_c <- scale(df$rating, center = T, scale = T)
+df$pose_c <- scale(df$pose, center = T, scale = T)
+
+ggplot(df, aes(x = rating_c)) + 
+  geom_histogram(binwidth = 0.5) +
+     labs(title = 'Histogram of self-reported emotion (standardised)', 
+          x = 'Self-reported emotion')
+
+```
+
+```{r echo=TRUE}
+
+m <- df %>% 
+  lmerTest::lmer(rating_c ~ pose_c + 
+                      ( 1 | ResponseId), data = .)
+broom.mixed::tidy(m)
+
+```
+
+### Now our intercept is 0 and the effect of pose is .3. Lets simulate with .1
+
+```{r include=FALSE}
+# RUN SIMULATION
+SESOI <- c(0, .1) # specify SESOI (i.e. specifiying a Smallest effect of interest which is used to simulate power)
+
+p <- mixedpower(model = m, data = df,
+                fixed_effects = c("pose"),
+                simvar = "ResponseId", steps = c(65, 70, 75, 80),
+                critical_value = 2, n_sim = 1000,
+                SESOI = SESOI, databased = T)
+```
+
+```{r echo=FALSE}
+p
+```
+
+### Transform the variables into a 100-scale by multiplying each column (happy and anger) by the maximum value possible, which is 6, then divide by 100.
+
+```{r}
+
+df <- 
+  filter(DF.long, study == 'Study_1' & demand == 'Control') %>% 
+  select(ResponseId, pose, trialnum = block.num, happy, anger) %>% 
+  mutate(happy = happy / 6 * 100,
+         anger = anger / 6 * 100) %>% 
+  mutate(anger = anger * (-1)) %>% 
+  pivot_longer(cols = c('happy', 'anger'), 
+               names_to = "emo", values_to = "rating")
+
+hist(df$rating, 
+     main = 'Histogram of self-reported emotion', 
+     xlab = 'Self-reported emotion (0 to 100)')
+
+
+```
+
+### Run the model
+
+```{r}
+m <- df %>% 
+  lmerTest::lmer(rating ~ pose + 
+                      ( 1 | ResponseId), data = .)
+broom.mixed::tidy(m)
+```
+
+### Simulate using unstandardised -100 to 100 ratings, the intercept is -10.4 and the effect of pose is 6.3. Lets take 2 for the simulation of SESOI
+
+```{r include=FALSE}
+
+# RUN SIMULATION
+SESOI <- c(-10.4, 2) # specify SESOI (i.e. specifying a Smallest effect of interest which is used to simulate power)
+
+p <- mixedpower(model = m, data = df,
+                fixed_effects = c("pose"),
+                simvar = "ResponseId", steps = c(65, 70, 75, 80, 85, 90),
+                critical_value = 2, n_sim = 1000,
+                SESOI = SESOI, databased = T)
+```
+
+```{r echo=FALSE}
+p
+```
+
+### Do the same as above but on standardised data
+
+```{r echo=FALSE}
+
+df$rating_c <- scale(df$rating, center = T, scale = T)
+df$pose_c <- scale(df$pose, center = T, scale = T)
+
+ggplot(df, aes(x = rating_c)) +
+  geom_histogram(binwidth = .5) +
+  labs( title = 'Histogram of self-reported emotion',
+        x = 'Self-reported emotion' )
+```
+
+```{r echo=FALSE}
+m <- df %>% 
+  lmerTest::lmer(rating_c ~ pose_c + 
+                      ( 1 | ResponseId), data = .)
+broom.mixed::tidy(m)
+```
+
+### Now we can simulate the standardised data set which is the same as the standardised data using the likert scale of -6 to 6. Intercept of 0 and beta of .3. For the simulaton we can use .1 again.
+
+```{r include=FALSE}
+# RUN SIMULATION
+SESOI <- c(0, .1) # specify SESOI (i.e. specifying a Smallest effect of interest which is used to simulate power)
+
+p <- mixedpower(model = m, data = df,
+                fixed_effects = c("pose_c"),
+                simvar = "ResponseId", 
+                steps = c(20, 30),
+                critical_value = 2, n_sim = 1000,
+                SESOI = SESOI, databased = T)
+```
+
+```{r echo=FALSE}
+p
+```
+
+### Now let us vary the trial numbers, we can simulate 
+```{r}
+m <- df %>% 
+  lmerTest::lmer(rating_c ~ pose_c + ( 1 | ResponseId), data = .)
+
+SESOI <- c(0, .1) # specify SESOI (i.e. specifying a Smallest effect of interest which is used to simulate power)
+
+# RUN SIMULATION
+power2 <- R2power(model = m, 
+                   data = df,
+                   fixed_effects = c("pose_c"),
+                   simvar = "ResponseId", 
+                   steps = c(30, 35, 40, 45, 50, 65, 70),
+                   R2var = "trialnum", 
+                   R2level = 2,  
+                   critical_value = 2,
+                   n_sim = 1000, 
+                   SESOI = SESOI, 
+                   databased = T)
+# RUN SIMULATION
+power4 <- R2power(model = m, 
+                   data = df,
+                   fixed_effects = c("pose_c"),
+                   simvar = "ResponseId", 
+                   steps = c(30, 35, 40, 45, 50, 65, 70),
+                   R2var = "trialnum", 
+                   R2level = 4,  
+                   critical_value = 2,
+                   n_sim = 1000, 
+                   SESOI = SESOI, 
+                   databased = T)
+# RUN SIMULATION
+power6 <- R2power(model = m, 
+                   data = df,
+                   fixed_effects = c("pose_c"),
+                   simvar = "ResponseId", 
+                   steps = c(30, 35, 40, 45, 50, 65, 70),
+                   R2var = "trialnum", 
+                   R2level = 6,  
+                   critical_value = 2,
+                   n_sim = 1000, 
+                   SESOI = SESOI, 
+                   databased = T)
+```
+
+```{r}
+power2
+power4
+power6
+```
+
+
+
